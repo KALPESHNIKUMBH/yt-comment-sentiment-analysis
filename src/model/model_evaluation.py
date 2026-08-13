@@ -10,18 +10,13 @@ import mlflow.sklearn
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-from sklearn.metrics import (
-    classification_report,
-    confusion_matrix,
-    accuracy_score,
-)
+from sklearn.metrics import classification_report, confusion_matrix
 from sklearn.feature_extraction.text import TfidfVectorizer
 from mlflow.models import infer_signature
 
-
-# ----------------------------
+# =========================
 # Logging configuration
-# ----------------------------
+# =========================
 logger = logging.getLogger("model_evaluation")
 logger.setLevel(logging.DEBUG)
 
@@ -42,196 +37,187 @@ if not logger.handlers:
     logger.addHandler(console_handler)
     logger.addHandler(file_handler)
 
-
-# ----------------------------
+# =========================
 # Utility functions
-# ----------------------------
-def load_data(file_path):
+# =========================
+def load_data(file_path: str) -> pd.DataFrame:
     df = pd.read_csv(file_path)
     df.fillna("", inplace=True)
-    logger.debug(f"Data loaded from {file_path}")
+    logger.debug(f"Loaded data from {file_path}")
     return df
 
 
-def load_model(model_path):
+def load_model(model_path: str):
     with open(model_path, "rb") as f:
         model = pickle.load(f)
-    logger.debug(f"Model loaded from {model_path}")
+    logger.debug(f"Loaded model from {model_path}")
     return model
 
 
-def load_vectorizer(vectorizer_path):
+def load_vectorizer(vectorizer_path: str) -> TfidfVectorizer:
     with open(vectorizer_path, "rb") as f:
         vectorizer = pickle.load(f)
-    logger.debug(f"Vectorizer loaded from {vectorizer_path}")
+    logger.debug(f"Loaded vectorizer from {vectorizer_path}")
     return vectorizer
 
 
-def load_params(params_path):
+def load_params(params_path: str) -> dict:
     with open(params_path, "r") as f:
         params = yaml.safe_load(f)
-    logger.debug(f"Parameters loaded from {params_path}")
+    logger.debug(f"Loaded parameters from {params_path}")
     return params
 
 
-def log_confusion_matrix(cm, name):
+def log_params_recursive(params, prefix=""):
+    for key, value in params.items():
+        if isinstance(value, dict):
+            log_params_recursive(value, prefix=f"{prefix}{key}.")
+        else:
+            mlflow.log_param(f"{prefix}{key}", value)
+
+
+def evaluate_model(model, X_test, y_test):
+    y_pred = model.predict(X_test)
+    report = classification_report(y_test, y_pred, output_dict=True)
+    cm = confusion_matrix(y_test, y_pred)
+    logger.debug("Model evaluation completed")
+    return report, cm
+
+
+def log_confusion_matrix(cm):
     plt.figure(figsize=(8, 6))
     sns.heatmap(cm, annot=True, fmt="d", cmap="Blues")
-    plt.title(f"Confusion Matrix - {name}")
+    plt.title("Confusion Matrix")
     plt.xlabel("Predicted")
     plt.ylabel("Actual")
 
-    file_name = f"confusion_matrix_{name}.png"
-    plt.savefig(file_name)
+    file_path = "confusion_matrix_test.png"
+    plt.savefig(file_path, bbox_inches="tight")
     plt.close()
 
-    mlflow.log_artifact(file_name)
+    mlflow.log_artifact(file_path)
+
+    if os.path.exists(file_path):
+        os.remove(file_path)
 
 
-def save_model_info(run_id, model_path, file_path):
+def save_model_info(run_id: str, model_uri: str, file_path: str):
+    info = {
+        "run_id": run_id,
+        "model_uri": model_uri
+    }
+
     with open(file_path, "w") as f:
-        json.dump(
-            {
-                "run_id": run_id,
-                "model_path": model_path,
-            },
-            f,
-            indent=4,
-        )
+        json.dump(info, f, indent=4)
 
+    logger.debug(f"Saved model info to {file_path}")
 
-def log_metrics(prefix, report):
-    mlflow.log_metric(
-        f"{prefix}_precision",
-        report["weighted avg"]["precision"],
-    )
-    mlflow.log_metric(
-        f"{prefix}_recall",
-        report["weighted avg"]["recall"],
-    )
-    mlflow.log_metric(
-        f"{prefix}_f1_score",
-        report["weighted avg"]["f1-score"],
-    )
-
-
-# ----------------------------
+# =========================
 # Main
-# ----------------------------
+# =========================
 def main():
     root_dir = os.path.abspath(
         os.path.join(os.path.dirname(__file__), "../../")
     )
 
+    # MLflow configuration
     mlflow.set_tracking_uri(
-        "http://ec2-3-80-142-29.compute-1.amazonaws.com:8000/"
+        "http://ec2-3-80-142-29.compute-1.amazonaws.com:8000"
     )
     mlflow.set_experiment("dvc-pipeline-runs")
 
-    with mlflow.start_run() as run:
-        try:
+    try:
+        with mlflow.start_run() as run:
+            logger.info(f"Started MLflow run: {run.info.run_id}")
+
+            # Load parameters
             params = load_params(os.path.join(root_dir, "params.yaml"))
+            log_params_recursive(params)
 
-            for key, value in params.items():
-                mlflow.log_param(key, value)
-
+            # Load model and vectorizer
             model = load_model(os.path.join(root_dir, "lgbm_model.pkl"))
             vectorizer = load_vectorizer(
                 os.path.join(root_dir, "tfidf_vectorizer.pkl")
             )
 
-            train_data = load_data(
-                os.path.join(root_dir, "data/interim/train_processed.csv")
-            )
+            # Load test data
             test_data = load_data(
                 os.path.join(root_dir, "data/interim/test_processed.csv")
             )
 
-            X_train = vectorizer.transform(train_data["clean_comment"])
-            y_train = train_data["category"]
+            X_test = vectorizer.transform(test_data["clean_comment"].values)
+            y_test = test_data["category"].values
 
-            X_test = vectorizer.transform(test_data["clean_comment"])
-            y_test = test_data["category"]
-
-            y_train_pred = model.predict(X_train)
-            y_test_pred = model.predict(X_test)
-
-            train_accuracy = accuracy_score(y_train, y_train_pred)
-            test_accuracy = accuracy_score(y_test, y_test_pred)
-
-            print(f"Training Accuracy: {train_accuracy:.4f}")
-            print(f"Test Accuracy: {test_accuracy:.4f}")
-
-            train_report = classification_report(
-                y_train,
-                y_train_pred,
-                output_dict=True,
-            )
-            test_report = classification_report(
-                y_test,
-                y_test_pred,
-                output_dict=True,
-            )
-
-            print("\nTraining Classification Report")
-            print(classification_report(y_train, y_train_pred))
-
-            print("\nTest Classification Report")
-            print(classification_report(y_test, y_test_pred))
-
-            mlflow.log_metric("train_accuracy", train_accuracy)
-            mlflow.log_metric("test_accuracy", test_accuracy)
-
-            log_metrics("train", train_report)
-            log_metrics("test", test_report)
-
+            # Signature
             input_example = pd.DataFrame(
-                X_test.toarray()[:5],
-                columns=vectorizer.get_feature_names_out(),
+                X_test[:5].toarray(),
+                columns=vectorizer.get_feature_names_out()
             )
 
             signature = infer_signature(
                 input_example,
-                model.predict(X_test[:5]),
+                model.predict(X_test[:5])
             )
 
+            # Log model (pickle serialization fixes LightGBM issue)
             mlflow.sklearn.log_model(
                 sk_model=model,
                 name="lgbm_model",
                 signature=signature,
                 input_example=input_example,
-                skops_trusted_types=[
-                    "collections.OrderedDict",
-                    "lightgbm.basic.Booster",
-                    "lightgbm.sklearn.LGBMClassifier",
-                ],
+                serialization_format="pickle"
             )
+
+            model_uri = f"runs:/{run.info.run_id}/lgbm_model"
 
             save_model_info(
                 run.info.run_id,
-                "lgbm_model",
-                "experiment_info.json",
+                model_uri,
+                os.path.join(root_dir, "experiment_info.json")
             )
 
+            mlflow.log_artifact(
+                os.path.join(root_dir, "experiment_info.json")
+            )
+
+            # Log vectorizer
             mlflow.log_artifact(
                 os.path.join(root_dir, "tfidf_vectorizer.pkl")
             )
 
-            train_cm = confusion_matrix(y_train, y_train_pred)
-            test_cm = confusion_matrix(y_test, y_test_pred)
+            # Evaluate model
+            report, cm = evaluate_model(model, X_test, y_test)
 
-            log_confusion_matrix(train_cm, "train_data")
-            log_confusion_matrix(test_cm, "test_data")
+            for label, metrics in report.items():
+                if isinstance(metrics, dict):
+                    mlflow.log_metric(
+                        f"test_{label}_precision",
+                        metrics.get("precision", 0.0)
+                    )
+                    mlflow.log_metric(
+                        f"test_{label}_recall",
+                        metrics.get("recall", 0.0)
+                    )
+                    mlflow.log_metric(
+                        f"test_{label}_f1_score",
+                        metrics.get("f1-score", 0.0)
+                    )
 
+            if "accuracy" in report:
+                mlflow.log_metric("test_accuracy", report["accuracy"])
+
+            log_confusion_matrix(cm)
+
+            # Tags
             mlflow.set_tag("model_type", "LightGBM")
             mlflow.set_tag("task", "Sentiment Analysis")
             mlflow.set_tag("dataset", "YouTube Comments")
 
             logger.info("Model evaluation completed successfully")
 
-        except Exception:
-            logger.exception("Failed to complete model evaluation")
-            raise
+    except Exception as e:
+        logger.exception("Model evaluation failed")
+        raise
 
 
 if __name__ == "__main__":
