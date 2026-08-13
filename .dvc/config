@@ -1,4 +1,4 @@
 [core]
     remote = myremote
 ['remote "myremote"']
-    url = C:\Users\rawal\AppData\Local\Temp
+    url = s3://kalpesh-mlflow-bucket
