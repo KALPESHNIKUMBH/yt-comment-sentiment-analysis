@@ -1,5 +1,5 @@
 dvc remote add -d myremote C:\Users\rawal\AppData\Local\Temp
-
+dvc remote add -d myremote s3://kalpesh-mlflow-bucket
 
 ##
 dvc status
