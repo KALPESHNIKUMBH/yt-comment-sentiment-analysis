@@ -108,7 +108,28 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: us-east-1
         run: |
-          nohup python flask_app/app.py &
+          nohup python flask_app/app.py > flask.log 2>&1 &
+
+          echo "Starting Flask application..."
+
+          for i in {1..30}; do
+            if curl -s http://localhost:8000/ > /dev/null; then
+              echo "Flask application is running!"
+              break
+            fi
+
+            echo "Waiting for Flask application... attempt $i/30"
+            sleep 2
+          done
+
+          echo "========== FLASK LOG =========="
+          cat flask.log
+          echo "==============================="
+
+          if ! curl -s http://localhost:8000/ > /dev/null; then
+            echo "Flask application failed to start."
+            exit 1
+          fi
 
       - name: Run Flask API tests
         run: |
